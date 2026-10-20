@@ -1,0 +1,87 @@
+{
+  "chatgpt": {
+    "name": "ChatGPT",
+    "container": "LLM",
+    "app_id": "cadlkienfkclaiaibeoongdcgmdikeeg",
+    "profile": "Profile 4",
+    "cmd_args": [
+      "--app-id=cadlkienfkclaiaibeoongdcgmdikeeg"
+    ],
+    "match": [
+      "cadlkienfkclaiaibeoongdcgmdikeeg",
+      "chatgpt"
+    ],
+    "width": 1.0
+  },
+  "claude": {
+    "name": "Claude",
+    "container": "LLM",
+    "app_id": "fmpnliohjhemenmnlpbfagaolkdacoja",
+    "profile": "Profile 4",
+    "cmd_args": [
+      "--app-id=fmpnliohjhemenmnlpbfagaolkdacoja"
+    ],
+    "match": [
+      "fmpnliohjhemenmnlpbfagaolkdacoja",
+      "claude"
+    ],
+    "width": 1.0
+  },
+  "github": {
+    "name": "GitHub",
+    "container": "Personal",
+    "app_id": "mjoklplbddabcmpepnokjaffbmgbkkgg",
+    "profile": "Profile 4",
+    "cmd_args": [
+      "--app-id=mjoklplbddabcmpepnokjaffbmgbkkgg",
+      "--app-launch-url-for-shortcuts-menu-item=https://github.com/anonlegionoke"
+    ],
+    "match": [
+      "mjoklplbddabcmpepnokjaffbmgbkkgg",
+      "github"
+    ],
+    "width": 1.0
+  },
+  "leetcode": {
+    "name": "LeetCode",
+    "container": "Personal",
+    "app_id": "mdjegeaeedhanfmmokagnjngpeipkemo",
+    "profile": "Profile 4",
+    "cmd_args": [
+      "--app-id=mdjegeaeedhanfmmokagnjngpeipkemo"
+    ],
+    "match": [
+      "mdjegeaeedhanfmmokagnjngpeipkemo",
+      "leetcode"
+    ],
+    "width": 1.0
+  },
+  "x": {
+    "name": "X",
+    "container": "Social",
+    "app_id": "lodlkdfmihgonocnmddehnfgiljnadcf",
+    "profile": "Profile 4",
+    "cmd_args": [
+      "--app-id=lodlkdfmihgonocnmddehnfgiljnadcf"
+    ],
+    "match": [
+      "lodlkdfmihgonocnmddehnfgiljnadcf",
+      "x.com"
+    ],
+    "width": 0.33333
+  },
+  "youtube": {
+    "name": "YouTube",
+    "container": "YT",
+    "app_id": "agimnkijcaahngcdmfeangaknmldooml",
+    "profile": "Profile 4",
+    "cmd_args": [
+      "--app-id=agimnkijcaahngcdmfeangaknmldooml"
+    ],
+    "match": [
+      "agimnkijcaahngcdmfeangaknmldooml",
+      "youtube"
+    ],
+    "width": 1.0
+  }
+}

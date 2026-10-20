@@ -1,0 +1,436 @@
+#!/usr/bin/env python3
+"""
+Brave PWA Manager for Niri
+Automates creating, configuring, and managing container-isolated,
+windowed-fullscreen PWAs in Niri with a single command.
+"""
+
+import sys
+import os
+import re
+import json
+import time
+import glob
+import subprocess
+
+CONFIG_DIR = os.path.expanduser("~/.config/brave-pwa")
+APPS_FILE = os.path.join(CONFIG_DIR, "apps.json")
+NIRI_CONFIG = os.path.expanduser("~/.config/niri/config.kdl")
+BRAVE_BASE_DIR = os.path.expanduser("~/.config/BraveSoftware/Brave-Browser")
+APPS_DESKTOP_DIR = os.path.expanduser("~/.local/share/applications")
+DESKTOP_DIR = os.path.expanduser("~/Desktop")
+BIN_DIR = os.path.expanduser("~/.local/bin")
+LAUNCHER_BIN = os.path.join(BIN_DIR, "brave-pwa-launcher")
+
+def load_apps():
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    if os.path.exists(APPS_FILE):
+        try:
+            with open(APPS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_apps(apps):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(APPS_FILE, "w") as f:
+        json.dump(apps, f, indent=2)
+
+def get_brave_containers(profile="Profile 4"):
+    prefs_path = os.path.join(BRAVE_BASE_DIR, profile, "Preferences")
+    containers = []
+    if os.path.exists(prefs_path):
+        try:
+            with open(prefs_path, "r") as f:
+                prefs = json.load(f)
+            clist = prefs.get("brave", {}).get("containers", {}).get("list", [])
+            for c in clist:
+                containers.append(c.get("name"))
+        except Exception:
+            pass
+    return containers or ["Personal", "Work", "Social", "Google", "Pro", "LLM", "YT"]
+
+def sync_desktop_files(apps):
+    for key, app in apps.items():
+        app_id = app.get("app_id")
+        if not app_id:
+            continue
+        symlink_path = os.path.join(BIN_DIR, f"brave-{key}-pwa")
+        profile = app.get("profile", "Profile 4")
+        profile_slug = profile.replace(" ", "_")
+        for folder in [APPS_DESKTOP_DIR, DESKTOP_DIR]:
+            dfile = os.path.join(folder, f"brave-{app_id}-{profile_slug}.desktop")
+            if os.path.exists(dfile):
+                try:
+                    with open(dfile, "r") as f:
+                        lines = f.readlines()
+                    new_lines = []
+                    for line in lines:
+                        if line.startswith("Exec="):
+                            parts = line.strip().split(" ", 2)
+                            extra = ""
+                            if len(parts) > 2 and parts[2].startswith("--app-launch-url"):
+                                extra = " " + parts[2]
+                            new_lines.append(f"Exec={symlink_path}{extra}\n")
+                        else:
+                            new_lines.append(line)
+                    with open(dfile, "w") as f:
+                        f.writelines(new_lines)
+                    os.chmod(dfile, 0o755)
+                except Exception as e:
+                    print(f"[!] Error syncing {dfile}: {e}")
+
+def sync_niri_rules(apps):
+    if not os.path.exists(NIRI_CONFIG):
+        return
+
+    with open(NIRI_CONFIG, "r") as f:
+        content = f.read()
+
+    begin_tag = "// >>> BEGIN BRAVE PWA RULES >>>"
+    end_tag = "// <<< END BRAVE PWA RULES <<<"
+
+    if begin_tag not in content or end_tag not in content:
+        # If markers don't exist yet, insert them before blur or at the end
+        rule_stub = f"\n{begin_tag}\n{end_tag}\n"
+        if "blur {" in content:
+            content = content.replace("blur {", f"{rule_stub}\nblur {{", 1)
+        else:
+            content += rule_stub
+
+    rules = [begin_tag]
+    for key, app in apps.items():
+        app_id = app.get("app_id", "")
+        width = app.get("width", 0.99999)
+        if width >= 0.99:
+            prop_str = "0.99999"
+        elif abs(width - 0.33333) < 0.05:
+            prop_str = "0.33333"
+        elif abs(width - 0.5) < 0.05:
+            prop_str = "0.5"
+        else:
+            prop_str = f"{width:.5f}"
+
+        rules.append("window-rule {")
+        rules.append(f'    match app-id=r"^brave-.*({app_id}|(?i){key})"')
+        rules.append(f"    default-column-width {{ proportion {prop_str}; }}")
+        rules.append("}")
+        rules.append("")
+
+    if rules and rules[-1] == "":
+        rules.pop()
+    rules.append(end_tag)
+
+    pattern = re.compile(rf"{re.escape(begin_tag)}.*?{re.escape(end_tag)}", re.DOTALL)
+    new_content = pattern.sub("\n".join(rules), content)
+
+    with open(NIRI_CONFIG, "w") as f:
+        f.write(new_content)
+
+    subprocess.run(["niri", "msg", "action", "load-config-file"], capture_output=True)
+
+def cmd_list():
+    apps = load_apps()
+    if not apps:
+        print("No Brave PWAs currently configured.")
+        return
+
+    print(f"{'Key':<12} {'Name':<16} {'Container':<12} {'Width':<8} {'App ID':<34}")
+    print("-" * 86)
+    for k, v in sorted(apps.items()):
+        width = v.get("width", 1.0)
+        width_str = "100%" if width >= 0.99 else f"{int(width*100)}%"
+        print(f"{k:<12} {v.get('name', k):<16} {v.get('container', ''):<12} {width_str:<8} {v.get('app_id', ''):<34}")
+
+def cmd_containers(profile="Profile 4"):
+    containers = get_brave_containers(profile)
+    print(f"Available Brave containers ({profile}):")
+    for c in containers:
+        print(f"  - {c}")
+
+def cmd_add(args):
+    profile = "Profile 4"
+    clean_args = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--profile" and i + 1 < len(args):
+            profile = args[i + 1]
+            i += 2
+        else:
+            clean_args.append(args[i])
+            i += 1
+
+    if len(clean_args) < 3:
+        print("Usage: brave-pwa add <name> <url> <container> [width] [--profile <profile_dir>]")
+        print("Examples:")
+        print("  brave-pwa add chatgpt https://chatgpt.com LLM 100%")
+        print("  brave-pwa add gmail https://mail.google.com Google 100%")
+        print("  brave-pwa add threads https://threads.net Social 33%")
+        sys.exit(1)
+
+    app_key = clean_args[0].lower().replace("brave-", "").replace("-pwa", "")
+    url = clean_args[1]
+    container = clean_args[2]
+
+    # Validate container (case-insensitive match against Brave containers)
+    valid_containers = get_brave_containers(profile)
+    matched_container = None
+    for c in valid_containers:
+        if c.lower() == container.lower():
+            matched_container = c
+            break
+
+    if not matched_container:
+        print(f"[!] Unknown container '{container}'.")
+        print(f"    Available containers: {', '.join(valid_containers)}")
+        sys.exit(1)
+    container = matched_container
+
+    # Parse width
+    width = 0.99999
+    if len(clean_args) >= 4:
+        w_arg = clean_args[3].strip().rstrip("%")
+        try:
+            val = float(w_arg)
+            if val > 1.0:
+                val = val / 100.0
+            width = val
+        except ValueError:
+            print(f"[!] Could not parse width '{clean_args[3]}', defaulting to 100%")
+            width = 0.99999
+
+    apps = load_apps()
+    if app_key in apps:
+        print(f"[!] Warning: App key '{app_key}' already exists in configuration.")
+        resp = input("    Overwrite? [y/N]: ").strip().lower()
+        if resp != "y":
+            sys.exit(0)
+
+    profile_slug = profile.replace(" ", "_")
+    manifest_dir = os.path.join(BRAVE_BASE_DIR, profile, "Web Applications", "Manifest Resources")
+
+    # Snapshot existing installed app IDs
+    existing_ids = set()
+    if os.path.exists(manifest_dir):
+        existing_ids.update(os.listdir(manifest_dir))
+    for f in glob.glob(os.path.join(APPS_DESKTOP_DIR, f"brave-*-{profile_slug}.desktop")):
+        base = os.path.basename(f)
+        m = re.match(rf"^brave-([a-p0-9]{{32}})-{profile_slug}\.desktop$", base)
+        if m:
+            existing_ids.add(m.group(1))
+
+    # Check if this app was already installed in Brave
+    detected_id = None
+    clean_name = app_key.capitalize()
+    for f in glob.glob(os.path.join(APPS_DESKTOP_DIR, f"brave-*-{profile_slug}.desktop")):
+        try:
+            with open(f, "r") as df:
+                fcontent = df.read()
+            m = re.match(rf"^brave-([a-p0-9]{{32}})-{profile_slug}\.desktop$", os.path.basename(f))
+            domain = url.replace("https://", "").replace("http://", "").split("/")[0].replace("www.", "")
+            if m and (app_key in fcontent.lower() or domain in fcontent.lower()):
+                candidate_id = m.group(1)
+                already_used = any(v.get("app_id") == candidate_id for k, v in apps.items() if k != app_key)
+                if not already_used:
+                    for l in fcontent.splitlines():
+                        if l.startswith("Name="):
+                            clean_name = l.split("=", 1)[1].strip()
+                    print(f"[i] Found existing installed PWA for '{app_key}': {clean_name} ({candidate_id})")
+                    detected_id = candidate_id
+                    break
+        except Exception:
+            pass
+
+    if not detected_id:
+        print("\n" + "=" * 70)
+        print(f"  Launching {url} in '{container}' container...")
+        print(f"  Please click the 'Install' icon in Brave's address bar")
+        print(f"  (or Menu ⋮ -> 'Save and share' -> 'Install {app_key} as app').")
+        print("  Waiting for installation... (auto-detecting, press Ctrl+C to abort)")
+        print("=" * 70 + "\n")
+
+        cmd = [
+            "/opt/brave.com/brave/brave-browser",
+            f"--profile-directory={profile}",
+            f"--container={container}",
+            url,
+        ]
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        start = time.time()
+        try:
+            while time.time() - start < 180:
+                time.sleep(1.0)
+                current_ids = set()
+                if os.path.exists(manifest_dir):
+                    current_ids.update(os.listdir(manifest_dir))
+                for f in glob.glob(os.path.join(APPS_DESKTOP_DIR, f"brave-*-{profile_slug}.desktop")):
+                    m = re.match(rf"^brave-([a-p0-9]{{32}})-{profile_slug}\.desktop$", os.path.basename(f))
+                    if m:
+                        current_ids.add(m.group(1))
+
+                new_ids = current_ids - existing_ids
+                if new_ids:
+                    detected_id = next(iter(new_ids))
+                    break
+        except KeyboardInterrupt:
+            print("\n[!] Setup cancelled by user.")
+            sys.exit(1)
+
+        if not detected_id:
+            print("\n[!] Timed out waiting for app installation.")
+            sys.exit(1)
+
+        print(f"\n[✓] Detected new PWA App ID: {detected_id}")
+
+    generated_desktop = os.path.join(APPS_DESKTOP_DIR, f"brave-{detected_id}-{profile_slug}.desktop")
+
+    # Wait up to 3 seconds for Brave to finish writing the .desktop file
+    d_start = time.time()
+    while time.time() - d_start < 3.0:
+        if os.path.exists(generated_desktop):
+            break
+        time.sleep(0.2)
+
+    if os.path.exists(generated_desktop):
+        with open(generated_desktop, "r") as f:
+            for line in f:
+                if line.startswith("Name=") and not clean_name:
+                    clean_name = line.split("=", 1)[1].strip()
+
+    # Save to apps.json
+    apps[app_key] = {
+        "name": clean_name,
+        "container": container,
+        "app_id": detected_id,
+        "profile": profile,
+        "cmd_args": [f"--app-id={detected_id}"],
+        "match": [detected_id, app_key],
+        "width": width,
+    }
+    save_apps(apps)
+    print(f"[✓] Saved {app_key} to {APPS_FILE}")
+
+    # Create launcher symlink in ~/.local/bin/
+    symlink_path = os.path.join(BIN_DIR, f"brave-{app_key}-pwa")
+    if os.path.islink(symlink_path) or os.path.exists(symlink_path):
+        os.remove(symlink_path)
+    os.symlink("brave-pwa-launcher", symlink_path)
+    print(f"[✓] Created executable symlink: {symlink_path}")
+
+    # Ensure desktop files are updated
+    time.sleep(0.5)
+    sync_desktop_files(apps)
+
+    # Refresh desktop database
+    subprocess.run(["update-desktop-database", APPS_DESKTOP_DIR], capture_output=True)
+
+    # Update Niri window rules
+    sync_niri_rules(apps)
+    print("[✓] Updated Niri window rules and reloaded compositor.")
+
+    # Chromium auto-spawns an uncontainerized window upon clicking Install;
+    # close that temporary window and re-launch in the container partition!
+    try:
+        w_res = subprocess.run(["niri", "msg", "--json", "windows"], capture_output=True, text=True)
+        if w_res.returncode == 0:
+            for w in json.loads(w_res.stdout):
+                if detected_id in (w.get("app_id") or ""):
+                    subprocess.run(["niri", "msg", "action", "close-window", "--id", str(w["id"])], capture_output=True)
+        time.sleep(0.3)
+        subprocess.Popen([symlink_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        print(f"[✓] Launched {clean_name} inside '{container}' container.")
+    except Exception:
+        pass
+
+    width_pct = "100%" if width >= 0.99 else f"{int(width*100)}%"
+    print("\n" + "=" * 70)
+    print(f"  SUCCESS! '{clean_name}' PWA is ready and running in '{container}' container!")
+    print(f"  - App ID:    {detected_id}")
+    print(f"  - Container: {container}")
+    print(f"  - Width:     {width_pct}")
+    print(f"  - Command:   brave-{app_key}-pwa")
+    print("=" * 70 + "\n")
+
+def cmd_remove(args):
+    if not args:
+        print("Usage: brave-pwa remove <name>")
+        sys.exit(1)
+
+    app_key = args[0].lower().replace("brave-", "").replace("-pwa", "")
+    apps = load_apps()
+
+    if app_key not in apps:
+        print(f"[!] App '{app_key}' not found in configuration.")
+        sys.exit(1)
+
+    app_info = apps.pop(app_key)
+    save_apps(apps)
+    app_id = app_info.get("app_id", "")
+    profile = app_info.get("profile", "Profile 4")
+    profile_slug = profile.replace(" ", "_")
+
+    # Remove symlink
+    symlink_path = os.path.join(BIN_DIR, f"brave-{app_key}-pwa")
+    if os.path.islink(symlink_path) or os.path.exists(symlink_path):
+        os.remove(symlink_path)
+        print(f"[✓] Removed symlink: {symlink_path}")
+
+    # Remove desktop files
+    for folder in [APPS_DESKTOP_DIR, DESKTOP_DIR]:
+        dfile = os.path.join(folder, f"brave-{app_id}-{profile_slug}.desktop")
+        if os.path.exists(dfile):
+            os.remove(dfile)
+            print(f"[✓] Removed desktop file: {dfile}")
+
+    # Update desktop database
+    subprocess.run(["update-desktop-database", APPS_DESKTOP_DIR], capture_output=True)
+
+    # Sync Niri rules
+    sync_niri_rules(apps)
+    print(f"[✓] Removed '{app_key}' from Niri rules and reloaded compositor.")
+    print(f"[✓] '{app_key}' successfully removed.")
+
+def cmd_sync():
+    apps = load_apps()
+    sync_desktop_files(apps)
+    sync_niri_rules(apps)
+    subprocess.run(["update-desktop-database", APPS_DESKTOP_DIR], capture_output=True)
+    print("[✓] Synchronized desktop files, Niri rules, and desktop database.")
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ["-h", "--help", "help"]:
+        print("Brave PWA Manager for Niri")
+        print("\nCommands:")
+        print("  brave-pwa add <name> <url> <container> [width]   Create a new PWA with one command")
+        print("  brave-pwa list                                  List all configured PWAs")
+        print("  brave-pwa containers                            List available Brave containers")
+        print("  brave-pwa remove <name>                         Remove a configured PWA")
+        print("  brave-pwa sync                                  Sync Niri rules and desktop database")
+        print("\nExamples:")
+        print("  brave-pwa add chatgpt https://chatgpt.com LLM 100%")
+        print("  brave-pwa add gmail https://mail.google.com Google 100%")
+        print("  brave-pwa add threads https://threads.net Social 33%")
+        sys.exit(0)
+
+    action = sys.argv[1].lower()
+    args = sys.argv[2:]
+
+    if action == "list":
+        cmd_list()
+    elif action == "containers":
+        cmd_containers()
+    elif action == "add":
+        cmd_add(args)
+    elif action == "remove":
+        cmd_remove(args)
+    elif action == "sync":
+        cmd_sync()
+    else:
+        print(f"Unknown action: {action}")
+        print("Run 'brave-pwa help' for usage.")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

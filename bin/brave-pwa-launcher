@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""
+Unified Brave PWA Launcher for Niri with Container Isolation
+and Windowed Fullscreen.
+"""
+
+import sys
+import os
+import subprocess
+import json
+import time
+
+CONFIG_PATH = os.path.expanduser("~/.config/brave-pwa/apps.json")
+
+def load_apps():
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r") as f:
+                data = json.load(f)
+                for k, v in data.items():
+                    if "match" not in v:
+                        v["match"] = [v.get("app_id", ""), k]
+                    if "cmd_args" not in v:
+                        v["cmd_args"] = [f"--app-id={v.get('app_id', '')}"]
+                return data
+        except Exception:
+            pass
+    return {}
+
+APPS = load_apps()
+
+def get_matching_window_ids(patterns):
+    try:
+        res = subprocess.run(["niri", "msg", "--json", "windows"], capture_output=True, text=True, timeout=1)
+        if res.returncode == 0 and res.stdout.strip():
+            windows = json.loads(res.stdout)
+            matching = set()
+            for w in windows:
+                app_id = (w.get("app_id") or "").lower()
+                for pat in patterns:
+                    if pat.lower() in app_id:
+                        matching.add(w["id"])
+                        break
+            return matching
+    except Exception:
+        pass
+    return set()
+
+def main():
+    prog = os.path.basename(sys.argv[0])
+    app_key = None
+
+    # Check if invoked via specific binary name, e.g., brave-leetcode-pwa
+    for key in APPS:
+        if key in prog.lower():
+            app_key = key
+            break
+
+    # Otherwise first argument is the app key
+    args = sys.argv[1:]
+    if not app_key and args:
+        candidate = args[0].lower().replace("brave-", "").replace("-pwa", "")
+        if candidate in APPS:
+            app_key = candidate
+            args = args[1:]
+
+    if not app_key or app_key not in APPS:
+        print(f"Usage: {prog} <app_name> [extra_args...]")
+        print("Available apps:", ", ".join(APPS.keys()))
+        sys.exit(1)
+
+    app_info = APPS[app_key]
+    existing_ids = get_matching_window_ids(app_info["match"])
+    profile = app_info.get("profile", "Profile 4")
+
+    cmd = [
+        "/opt/brave.com/brave/brave-browser",
+        f"--profile-directory={profile}",
+        f"--container={app_info['container']}",
+    ]
+    cmd.extend(app_info["cmd_args"])
+    cmd.extend(args)
+
+    def log(msg):
+        try:
+            with open("/tmp/brave-pwa-launcher.log", "a") as f:
+                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+        except Exception:
+            pass
+
+    log(f"Starting {app_key} with cmd: {' '.join(cmd)}")
+    log(f"Existing IDs: {existing_ids}")
+
+    if existing_ids:
+        # App is already open; launch command in case args (like shortcut URLs) were passed, then focus it
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        target_id = next(iter(existing_ids))
+        time.sleep(0.1)
+        subprocess.run(["niri", "msg", "action", "focus-window", "--id", str(target_id)], capture_output=True)
+        log(f"Focused existing window {target_id}")
+        return
+
+    # Launch Brave detached
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+    # Wait for the newly created window to appear in Niri
+    start = time.time()
+    while time.time() - start < 12.0:
+        time.sleep(0.1)
+        current_ids = get_matching_window_ids(app_info["match"])
+        new_ids = current_ids - existing_ids
+        if new_ids:
+            new_id = next(iter(new_ids))
+            log(f"Found new window {new_id} after {time.time()-start:.2f}s")
+            # Brief pause for window to map to Wayland surface
+            time.sleep(0.25)
+            res = subprocess.run(["niri", "msg", "action", "toggle-windowed-fullscreen", "--id", str(new_id)], capture_output=True, text=True)
+            log(f"toggle-windowed-fullscreen result: code {res.returncode}, err: {res.stderr}")
+            return
+
+    log(f"Timed out waiting for new window for {app_key}")
+
+if __name__ == "__main__":
+    main()

@@ -38,7 +38,11 @@ def get_matching_window_ids(patterns):
             for w in windows:
                 app_id = (w.get("app_id") or "").lower()
                 for pat in patterns:
-                    if pat.lower() in app_id:
+                    pat_l = pat.lower()
+                    if len(pat_l) >= 32 and pat_l in app_id:
+                        matching.add(w["id"])
+                        break
+                    elif f"brave-{pat_l}" in app_id:
                         matching.add(w["id"])
                         break
             return matching
@@ -51,10 +55,18 @@ def main():
     app_key = None
 
     # Check if invoked via specific binary name, e.g., brave-leetcode-pwa
-    for key in APPS:
-        if key in prog.lower():
-            app_key = key
-            break
+    stem = prog.lower()
+    if stem.startswith("brave-"):
+        stem = stem[6:]
+    if stem.endswith("-pwa"):
+        stem = stem[:-4]
+    if stem in APPS:
+        app_key = stem
+    else:
+        for key in APPS:
+            if prog.lower() == f"brave-{key}-pwa":
+                app_key = key
+                break
 
     # Otherwise first argument is the app key
     args = sys.argv[1:]

@@ -68,10 +68,8 @@ def sync_desktop_files(apps):
                     new_lines = []
                     for line in lines:
                         if line.startswith("Exec="):
-                            parts = line.strip().split(" ", 2)
-                            extra = ""
-                            if len(parts) > 2 and parts[2].startswith("--app-launch-url"):
-                                extra = " " + parts[2]
+                            match = re.search(r'(--app-launch-url[^\s"\n]+)', line)
+                            extra = f" {match.group(1)}" if match else ""
                             new_lines.append(f"Exec={symlink_path}{extra}\n")
                         else:
                             new_lines.append(line)
@@ -113,7 +111,10 @@ def sync_niri_rules(apps):
             prop_str = f"{width:.5f}"
 
         rules.append("window-rule {")
-        rules.append(f'    match app-id=r"^brave-.*({app_id}|(?i){key})"')
+        if app_id:
+            rules.append(f'    match app-id=r"^brave-.*{app_id}"')
+        else:
+            rules.append(f'    match app-id=r"^brave-.*(?i){key}"')
         rules.append(f"    default-column-width {{ proportion {prop_str}; }}")
         rules.append("}")
         rules.append("")
@@ -228,14 +229,27 @@ def cmd_add(args):
             with open(f, "r") as df:
                 fcontent = df.read()
             m = re.match(rf"^brave-([a-p0-9]{{32}})-{profile_slug}\.desktop$", os.path.basename(f))
-            domain = url.replace("https://", "").replace("http://", "").split("/")[0].replace("www.", "")
-            if m and (app_key in fcontent.lower() or domain in fcontent.lower()):
-                candidate_id = m.group(1)
+            if not m:
+                continue
+            candidate_id = m.group(1)
+
+            desktop_name = ""
+            for l in fcontent.splitlines():
+                if l.startswith("Name="):
+                    desktop_name = l.split("=", 1)[1].strip()
+                    break
+
+            domain = url.replace("https://", "").replace("http://", "").split("/")[0].replace("www.", "").lower()
+            name_match = (
+                app_key.lower() == desktop_name.lower() or
+                bool(re.search(rf"\b{re.escape(app_key.lower())}\b", desktop_name.lower()))
+            )
+            domain_match = (len(domain) > 3 and domain in fcontent.lower())
+
+            if name_match or domain_match:
                 already_used = any(v.get("app_id") == candidate_id for k, v in apps.items() if k != app_key)
                 if not already_used:
-                    for l in fcontent.splitlines():
-                        if l.startswith("Name="):
-                            clean_name = l.split("=", 1)[1].strip()
+                    clean_name = desktop_name or app_key.capitalize()
                     print(f"[i] Found existing installed PWA for '{app_key}': {clean_name} ({candidate_id})")
                     detected_id = candidate_id
                     break
